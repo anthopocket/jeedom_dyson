@@ -1,0 +1,8 @@
+{
+    "Le port socket n'est pas configuré": "Le port socket n'est pas configuré",
+    "Le démon Dyson n'est pas démarré": "Le démon Dyson n'est pas démarré",
+    "Veuillez vérifier la configuration du plugin (port socket manquant)": "Veuillez vérifier la configuration du plugin (port socket manquant)",
+    "Commande inconnue": "Commande inconnue",
+    "Accès refusé (clé API invalide)": "Accès refusé (clé API invalide)",
+    "Données JSON invalides": "Données JSON invalides"
+}

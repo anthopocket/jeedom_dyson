@@ -1,0 +1,14 @@
+{
+    "id": "dyson",
+    "name": "Dyson",
+    "description": "Contrôle et supervision des appareils Dyson : purificateurs d'air, ventilateurs, climatiseurs et aspirateurs robots via MQTT local.",
+    "licence": "AGPL",
+    "author": "Community",
+    "require": "4.2",
+    "category": "home automation protocol",
+    "changelog": "",
+    "documentation": "",
+    "hasDependency": true,
+    "hasOwnDeamon": true,
+    "maxDependancyInstallTime": 10
+}
