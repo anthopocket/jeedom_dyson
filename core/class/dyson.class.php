@@ -313,6 +313,7 @@ class dyson extends eqLogic {
             array('name' => 'COV',               'logicalId' => 'voc',                'type' => 'info',   'subType' => 'numeric', 'unite' => 'ppb',    'historize' => 1, 'isVisible' => 1),
             array('name' => 'NO2',               'logicalId' => 'no2',                'type' => 'info',   'subType' => 'numeric', 'unite' => 'µg/m³',  'historize' => 1, 'isVisible' => 1),
             array('name' => 'CO2',               'logicalId' => 'co2',                'type' => 'info',   'subType' => 'numeric', 'unite' => 'ppm',    'historize' => 1, 'isVisible' => 1),
+            array('name' => 'Qualité air',       'logicalId' => 'air_quality',        'type' => 'info',   'subType' => 'numeric', 'unite' => 'AQI',    'historize' => 1, 'isVisible' => 1),
             // ── Actions ───────────────────────────────────────────────
             array('name' => 'Allumer',           'logicalId' => 'cmd_power_on',       'type' => 'action', 'subType' => 'other',   'isVisible' => 1),
             array('name' => 'Éteindre',          'logicalId' => 'cmd_power_off',      'type' => 'action', 'subType' => 'other',   'isVisible' => 1),
@@ -367,23 +368,22 @@ class dyson extends eqLogic {
     private function buildCommands($_cmds) {
         foreach ($_cmds as $def) {
             $cmd = $this->getCmd(null, $def['logicalId']);
-            if (is_object($cmd)) {
-                continue;
-            }
-            $cmd = new dysonCmd();
-            $cmd->setEqLogic_id($this->getId());
-            $cmd->setLogicalId($def['logicalId']);
-            $cmd->setType($def['type']);
-            $cmd->setSubType($def['subType']);
-            $cmd->setName($def['name']);
-            $cmd->setUnite($def['unite'] ?? '');
-            $cmd->setIsVisible($def['isVisible'] ?? 1);
-            $cmd->setIsHistorized($def['historize'] ?? 0);
-            if (!empty($def['configuration'])) {
-                foreach ($def['configuration'] as $k => $v) {
-                    $cmd->setConfiguration($k, $v);
+            if (!is_object($cmd)) {
+                $cmd = new dysonCmd();
+                $cmd->setEqLogic_id($this->getId());
+                $cmd->setLogicalId($def['logicalId']);
+                $cmd->setType($def['type']);
+                $cmd->setSubType($def['subType']);
+                $cmd->setName($def['name']);
+                $cmd->setIsVisible($def['isVisible'] ?? 1);
+                $cmd->setIsHistorized($def['historize'] ?? 0);
+                if (!empty($def['configuration'])) {
+                    foreach ($def['configuration'] as $k => $v) {
+                        $cmd->setConfiguration($k, $v);
+                    }
                 }
             }
+            $cmd->setUnite($def['unite'] ?? '');
             $cmd->save();
         }
         log::add('dyson', 'info', '[' . $this->getLogicalId() . '] ' . count($_cmds) . ' commande(s) vérifiées/créées');
