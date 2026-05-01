@@ -5,7 +5,7 @@
     "licence": "AGPL",
     "author": "Community",
     "require": "4.2",
-    "category": "home automation protocol",
+    "category": "devicecommunication",
     "changelog": "",
     "documentation": "",
     "hasDependency": true,
