@@ -52,11 +52,76 @@ ENV_DATA_MAP = {
     'tact': 'temperature',
     'hact': 'humidity',
     'pact': 'pm10',
-    'p25r': 'pm25',
+    'pm10': 'pm10',
+    'p10r': 'pm10',   # p10r prioritaire sur pm10 (valeur brute = référence app Dyson)
+    'pm25': 'pm25',
+    'p25r': 'pm25',   # p25r prioritaire sur pm25
     'va10': 'voc',
     'noxl': 'no2',
     'co2r': 'co2',
+    'hchr': 'hcho',
+    'hcho': 'hcho',
 }
+
+# EPA AQI breakpoints: (C_lo, C_hi, I_lo, I_hi)
+_AQI_PM25 = [
+    (0.0,   12.0,   0,   50),
+    (12.1,  35.4,  51,  100),
+    (35.5,  55.4, 101,  150),
+    (55.5, 150.4, 151,  200),
+    (150.5, 250.4, 201, 300),
+    (250.5, 350.4, 301, 400),
+    (350.5, 500.4, 401, 500),
+]
+_AQI_PM10 = [
+    (0,   54,   0,  50),
+    (55,  154,  51, 100),
+    (155, 254, 101, 150),
+    (255, 354, 151, 200),
+    (355, 424, 201, 300),
+    (425, 504, 301, 400),
+    (505, 604, 401, 500),
+]
+# VOC in mg/m³ (raw / 1000)
+_AQI_VOC = [
+    (0.0,    0.065,   0,  50),
+    (0.066,  0.22,   51, 100),
+    (0.221,  0.66,  101, 150),
+    (0.661,  2.2,   151, 200),
+    (2.21,   5.5,   201, 300),
+    (5.51,  11.0,   301, 400),
+    (11.01, 22.0,   401, 500),
+]
+# NO2 in µg/m³
+_AQI_NO2 = [
+    (0,    53,    0,  50),
+    (54,   100,  51, 100),
+    (101,  360, 101, 150),
+    (361,  649, 151, 200),
+    (650, 1249, 201, 300),
+    (1250, 1649, 301, 400),
+    (1650, 2049, 401, 500),
+]
+# CO2 in ppm
+_AQI_CO2 = [
+    (0,     400,    0,  50),
+    (401,  1000,   51, 100),
+    (1001, 2000,  101, 150),
+    (2001, 5000,  151, 200),
+    (5001, 10000, 201, 300),
+    (10001, 40000, 301, 400),
+    (40001, 100000, 401, 500),
+]
+# Formaldehyde in mg/m³ (raw / 1000)
+_AQI_HCHO = [
+    (0.0,   0.05,   0,  50),
+    (0.051, 0.1,   51, 100),
+    (0.101, 0.3,  101, 150),
+    (0.301, 0.5,  151, 200),
+    (0.501, 1.0,  201, 300),
+    (1.001, 2.0,  301, 400),
+    (2.001, 5.0,  401, 500),
+]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -223,18 +288,73 @@ class DysonDevice:
     def _handle_env_data(self, payload: dict):
         data = payload.get('data', {})
         logger.debug('[%s] Données environnementales brutes : %s', self.serial, data)
-        cmds = []
+        values = {}
         for key, logical_id in ENV_DATA_MAP.items():
             if key in data:
                 raw_val = data[key]
                 value   = self._convert_env_value(key, raw_val)
                 logger.debug('[%s]   %s=%s → %s=%s', self.serial, key, raw_val, logical_id, value)
                 if value is not None:
-                    cmds.append({'logical_id': logical_id, 'value': value})
+                    values[logical_id] = value  # last write wins, deduplicates
 
+        # Indice AQI 0-500 (EPA, interpolation linéaire)
+        aq = self._calc_air_quality(
+            pm25=values.get('pm25'),
+            pm10=values.get('pm10'),
+            voc=values.get('voc'),
+            no2=values.get('no2'),
+            co2=values.get('co2'),
+            hcho=values.get('hcho'),
+        )
+        if aq is not None:
+            values['air_quality'] = aq
+            logger.debug('[%s] Qualité air AQI calculée : %d', self.serial, aq)
+
+        cmds = [{'logical_id': lid, 'value': v} for lid, v in values.items()]
         logger.info('[%s] %d capteur(s) environnementaux à envoyer à Jeedom', self.serial, len(cmds))
         if cmds:
             self._send_to_jeedom(cmds)
+
+    @staticmethod
+    def _aqi_from_ranges(value: float, ranges: list) -> Optional[int]:
+        """Interpolation linéaire EPA AQI pour une valeur et une table de seuils."""
+        for (c_lo, c_hi, i_lo, i_hi) in ranges:
+            if c_lo <= value <= c_hi:
+                return round((i_hi - i_lo) / (c_hi - c_lo) * (value - c_lo) + i_lo)
+        if value > ranges[-1][1]:
+            return 500
+        return None
+
+    @staticmethod
+    def _calc_air_quality(pm25=None, pm10=None, voc=None, no2=None,
+                          co2=None, hcho=None) -> Optional[int]:
+        """Indice AQI global 0-500 (EPA) : max des sous-indices par polluant."""
+        indices = []
+        if pm25 is not None:
+            v = DysonDevice._aqi_from_ranges(pm25, _AQI_PM25)
+            if v is not None:
+                indices.append(v)
+        if pm10 is not None:
+            v = DysonDevice._aqi_from_ranges(pm10, _AQI_PM10)
+            if v is not None:
+                indices.append(v)
+        if voc is not None:
+            v = DysonDevice._aqi_from_ranges(voc, _AQI_VOC)
+            if v is not None:
+                indices.append(v)
+        if no2 is not None:
+            v = DysonDevice._aqi_from_ranges(no2, _AQI_NO2)
+            if v is not None:
+                indices.append(v)
+        if co2 is not None:
+            v = DysonDevice._aqi_from_ranges(co2, _AQI_CO2)
+            if v is not None:
+                indices.append(v)
+        if hcho is not None:
+            v = DysonDevice._aqi_from_ranges(hcho, _AQI_HCHO)
+            if v is not None:
+                indices.append(v)
+        return max(indices) if indices else None
 
     def _handle_faults(self, payload: dict):
         faults = payload.get('faults', {})
@@ -273,6 +393,8 @@ class DysonDevice:
             val = int(raw)
             if key == 'tact':
                 return round(val / 10 - 273.15, 1)
+            if key in ('va10', 'hchr', 'hcho'):
+                return round(val / 1000.0, 4)
             return val
         except (ValueError, TypeError) as exc:
             logger.warning('[%s] Impossible de convertir env %s=%s : %s', self.serial, key, raw, exc)
