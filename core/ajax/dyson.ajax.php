@@ -77,6 +77,16 @@ try {
         ajax::success($result);
     }
 
+    /* ── Exécuter une commande action ──────────────────────────────── */
+    if ($action == 'execute_cmd') {
+        $cmd = cmd::byId(init('cmd_id'));
+        if (!is_object($cmd)) throw new Exception('Commande introuvable');
+        if ($cmd->getType() !== 'action') throw new Exception('Commande non exécutable (type info)');
+        $options = json_decode(init('options', '{}'), true) ?: array();
+        $result = $cmd->execCmd($options);
+        ajax::success($result);
+    }
+
     /* ── Recréer les commandes ──────────────────────────────────────── */
     if ($action == 'recreate_cmds') {
         $eq = eqLogic::byId(init('id'));
