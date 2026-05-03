@@ -53,9 +53,9 @@ ENV_DATA_MAP = {
     'hact': 'humidity',
     'pact': 'pm10',
     'pm10': 'pm10',
-    'p10r': 'pm10',   # p10r prioritaire sur pm10 (valeur brute = référence app Dyson)
+    'p10r': 'pm10',
     'pm25': 'pm25',
-    'p25r': 'pm25',   # p25r prioritaire sur pm25
+    'p25r': 'pm25',
     'va10': 'voc',
     'noxl': 'no2',
     'co2r': 'co2',
@@ -63,7 +63,7 @@ ENV_DATA_MAP = {
     'hcho': 'hcho',
 }
 
-# EPA AQI breakpoints: (C_lo, C_hi, I_lo, I_hi)
+# EPA AQI breakpoints
 _AQI_PM25 = [
     (0.0,   12.0,   0,   50),
     (12.1,  35.4,  51,  100),
@@ -82,7 +82,6 @@ _AQI_PM10 = [
     (425, 504, 301, 400),
     (505, 604, 401, 500),
 ]
-# VOC in mg/m³ (raw / 1000)
 _AQI_VOC = [
     (0.0,    0.065,   0,  50),
     (0.066,  0.22,   51, 100),
@@ -92,7 +91,6 @@ _AQI_VOC = [
     (5.51,  11.0,   301, 400),
     (11.01, 22.0,   401, 500),
 ]
-# NO2 in µg/m³
 _AQI_NO2 = [
     (0,    53,    0,  50),
     (54,   100,  51, 100),
@@ -102,7 +100,6 @@ _AQI_NO2 = [
     (1250, 1649, 301, 400),
     (1650, 2049, 401, 500),
 ]
-# CO2 in ppm
 _AQI_CO2 = [
     (0,     400,    0,  50),
     (401,  1000,   51, 100),
@@ -112,7 +109,6 @@ _AQI_CO2 = [
     (10001, 40000, 301, 400),
     (40001, 100000, 401, 500),
 ]
-# Formaldehyde in mg/m³ (raw / 1000)
 _AQI_HCHO = [
     (0.0,   0.05,   0,  50),
     (0.051, 0.1,   51, 100),
@@ -159,18 +155,18 @@ class DysonDevice:
             logger.warning('[%s] Pas d\'adresse IP configurée — connexion ignorée', self.serial)
             return
 
+        decoded_pwd = self._decode_password()
         logger.info('[%s] Initialisation client MQTT (username=%s)', self.serial, self.username)
         try:
-            # paho-mqtt >= 2.0 — supprime le DeprecationWarning
             self._client = mqtt.Client(
                 mqtt.CallbackAPIVersion.VERSION1,
                 client_id=self.serial,
                 protocol=mqtt.MQTTv311,
             )
         except AttributeError:
-            # paho-mqtt < 2.0
             self._client = mqtt.Client(client_id=self.serial, protocol=mqtt.MQTTv311)
-        self._client.username_pw_set(self.username, self._decode_password())
+
+        self._client.username_pw_set(self.username, decoded_pwd)
         self._client.on_connect    = self._on_connect
         self._client.on_disconnect = self._on_disconnect
         self._client.on_message    = self._on_message
@@ -270,7 +266,7 @@ class DysonDevice:
         if payload.get('msg') == 'STATE-CHANGE':
             product_state = {k: v[1] if isinstance(v, list) else v
                              for k, v in product_state.items()}
-            logger.debug('[%s] STATE-CHANGE après extraction nouvelle valeur : %s', self.serial, product_state)
+            logger.debug('[%s] STATE-CHANGE après extraction : %s', self.serial, product_state)
 
         cmds = []
         for key, logical_id in PRODUCT_STATE_MAP.items():
@@ -295,9 +291,8 @@ class DysonDevice:
                 value   = self._convert_env_value(key, raw_val)
                 logger.debug('[%s]   %s=%s → %s=%s', self.serial, key, raw_val, logical_id, value)
                 if value is not None:
-                    values[logical_id] = value  # last write wins, deduplicates
+                    values[logical_id] = value
 
-        # Indice AQI 0-500 (EPA, interpolation linéaire)
         aq = self._calc_air_quality(
             pm25=values.get('pm25'),
             pm10=values.get('pm10'),
@@ -317,7 +312,6 @@ class DysonDevice:
 
     @staticmethod
     def _aqi_from_ranges(value: float, ranges: list) -> Optional[int]:
-        """Interpolation linéaire EPA AQI pour une valeur et une table de seuils."""
         for (c_lo, c_hi, i_lo, i_hi) in ranges:
             if c_lo <= value <= c_hi:
                 return round((i_hi - i_lo) / (c_hi - c_lo) * (value - c_lo) + i_lo)
@@ -328,7 +322,6 @@ class DysonDevice:
     @staticmethod
     def _calc_air_quality(pm25=None, pm10=None, voc=None, no2=None,
                           co2=None, hcho=None) -> Optional[int]:
-        """Indice AQI global 0-500 (EPA) : max des sous-indices par polluant."""
         indices = []
         if pm25 is not None:
             v = DysonDevice._aqi_from_ranges(pm25, _AQI_PM25)
@@ -464,7 +457,7 @@ class DysonDevice:
 
     def _request_current_state(self):
         now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
-        logger.info('[%s] Demande état courant (REQUEST-CURRENT-STATE + ENVIRONMENTAL)', self.serial)
+        logger.info('[%s] Demande état courant', self.serial)
         self._publish({'msg': 'REQUEST-CURRENT-STATE', 'time': now_iso})
         self._publish({'msg': 'REQUEST-PRODUCT-ENVIRONMENT-CURRENT-SENSOR-DATA', 'time': now_iso})
 
@@ -486,6 +479,41 @@ class DysonDevice:
             else:
                 logger.debug('[%s] Heartbeat — non connecté, skip', self.serial)
 
+    # ── Déchiffrement mot de passe MQTT ───────────────────────────────
+
+    def _decode_password(self) -> str:
+        """
+        Déchiffre le LocalCredentials Dyson (base64 + AES-CBC) pour extraire
+        apPasswordHash, le vrai mot de passe du broker MQTT local.
+        Si le mot de passe est déjà en clair, il est retourné tel quel.
+        """
+        import base64 as _b64
+        import json as _json
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.backends import default_backend
+
+        pwd = self.password
+        if not pwd:
+            return pwd
+
+        try:
+            key = (b'\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10'
+                   b'\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20')
+            iv       = b'\x00' * 16
+            decoded  = _b64.b64decode(pwd)
+            cipher   = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+            dec      = cipher.decryptor()
+            raw      = dec.update(decoded) + dec.finalize()
+            unpadded = raw[:-raw[-1]]
+            data     = _json.loads(unpadded)
+            result   = data.get('apPasswordHash', data.get('serial', pwd))
+            logger.debug('[%s] Mot de passe MQTT déchiffré → %s...', self.serial, result[:6])
+            return result
+        except Exception as exc:
+            # Pas du base64 chiffré → déjà en clair
+            logger.debug('[%s] Mot de passe non chiffré, utilisé tel quel (%s)', self.serial, exc)
+            return pwd
+
     # ── Callback Jeedom ───────────────────────────────────────────────
 
     def _send_to_jeedom(self, cmds: list):
@@ -497,7 +525,7 @@ class DysonDevice:
         try:
             r = requests.post(self.callback_url, json=payload, timeout=CALLBACK_TIMEOUT)
             if r.status_code == 200:
-                logger.debug('[%s] ✓ Callback Jeedom OK (HTTP 200)', self.serial)
+                logger.debug('[%s] ✓ Callback Jeedom OK', self.serial)
             else:
                 logger.warning('[%s] ✗ Callback Jeedom HTTP %d : %s', self.serial, r.status_code, r.text[:200])
         except requests.exceptions.ConnectionError as exc:
@@ -506,13 +534,6 @@ class DysonDevice:
             logger.error('[%s] Callback Jeedom — timeout (%ds)', self.serial, CALLBACK_TIMEOUT)
         except Exception as exc:
             logger.error('[%s] Callback Jeedom — erreur inattendue : %s', self.serial, exc)
-
-    # ── Utilitaires ───────────────────────────────────────────────────
-
-    def _decode_password(self) -> str:
-        # libdyson already decodes LocalCredentials (base64 → JSON → apCredentials).
-        # The credentials stored in Jeedom are already plain text — do not re-decode.
-        return self.password
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -561,8 +582,6 @@ class DysonDaemon:
             os.remove(self.pid_file)
             logger.info('Fichier PID supprimé')
 
-    # ── Serveur socket ────────────────────────────────────────────────
-
     def _socket_loop(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -599,13 +618,11 @@ class DysonDaemon:
             payload = json.loads(raw)
             self._dispatch(payload)
         except json.JSONDecodeError as exc:
-            logger.error('JSON invalide depuis socket : %s — données : %s', exc, data[:200])
+            logger.error('JSON invalide depuis socket : %s', exc)
         except Exception as exc:
             logger.error('Erreur traitement socket : %s', exc, exc_info=True)
         finally:
             conn.close()
-
-    # ── Dispatch des commandes ─────────────────────────────────────────
 
     def _dispatch(self, payload: dict):
         cmd = payload.get('cmd', '')
@@ -613,12 +630,10 @@ class DysonDaemon:
 
         if cmd == 'add':
             self._add_device(payload['device'])
-
         elif cmd == 'remove':
             device_id = int(payload['device_id'])
             logger.info('Suppression appareil id=%d', device_id)
             self._remove_device(device_id)
-
         elif cmd == 'send':
             device_id = int(payload['device_id'])
             action    = payload.get('action', '')
@@ -631,7 +646,6 @@ class DysonDaemon:
             else:
                 logger.error('Appareil id=%d introuvable (appareils connus : %s)',
                              device_id, list(self.devices.keys()))
-
         elif cmd == 'request_state':
             device_id = int(payload['device_id'])
             logger.debug('Demande état pour appareil id=%d', device_id)
@@ -644,7 +658,6 @@ class DysonDaemon:
                     logger.warning('Appareil id=%d non connecté — état non demandé', device_id)
             else:
                 logger.warning('Appareil id=%d introuvable pour request_state', device_id)
-
         else:
             logger.warning('Commande inconnue reçue de Jeedom : %s', cmd)
 
