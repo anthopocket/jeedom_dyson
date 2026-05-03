@@ -93,8 +93,13 @@ class dyson extends eqLogic {
 
     public static function dependancy_install() {
         log::clear('dyson_update');
+        $progress_file = jeedom::getTmpFolder('dyson') . '/dependency';
+        /* Remettre le progress à 0 pour que Jeedom détecte le démarrage */
+        if (file_exists($progress_file)) {
+            unlink($progress_file);
+        }
         $return = array(
-            'progress_file' => jeedom::getTmpFolder('dyson') . '/dependency',
+            'progress_file' => $progress_file,
             'state'         => 'ok',
         );
         $script  = dirname(dirname(dirname(__FILE__))) . '/resources/install_dep.sh';
@@ -104,18 +109,36 @@ class dyson extends eqLogic {
     }
 
     public static function dependancy_info() {
+        $progress_file = jeedom::getTmpFolder('dyson') . '/dependency';
         $return = array(
-            'progress_file' => jeedom::getTmpFolder('dyson') . '/dependency',
+            'progress_file' => $progress_file,
             'state'         => 'nok',
         );
+
+        /* Vérification complète : venv + tous les paquets requis */
         $venv = dirname(dirname(dirname(__FILE__))) . '/resources/python_venv/bin/python3';
         if (!file_exists($venv)) {
+            log::add('dyson', 'debug', 'dependancy_info : venv introuvable');
             return $return;
         }
-        exec(escapeshellarg($venv) . ' -c "import paho.mqtt.client, requests" 2>&1', $out, $rc);
+
+        exec(
+            escapeshellarg($venv) . ' -c "import paho.mqtt.client, requests, cryptography" 2>&1',
+            $out,
+            $rc
+        );
+
         if ($rc === 0) {
             $return['state'] = 'ok';
+            /* Nettoyer le progress file pour éviter l'affichage "en cours" */
+            if (file_exists($progress_file)) {
+                unlink($progress_file);
+            }
+            log::add('dyson', 'debug', 'dependancy_info : tous les paquets OK');
+        } else {
+            log::add('dyson', 'warning', 'dependancy_info : import échoué — ' . implode(' ', $out));
         }
+
         return $return;
     }
 
@@ -132,13 +155,9 @@ class dyson extends eqLogic {
     }
 
     /* ================================================================
-     * Découverte cloud Dyson (via libdyson Python)
+     * Découverte cloud Dyson
      * ================================================================ */
 
-    /**
-     * Étape 1 : initie l'authentification Dyson via libdyson.
-     * Envoie un OTP par email et retourne array('type'=>'otp', 'challengeId'=>'...').
-     */
     public static function authInit($_email, $_password, $_country = 'FR') {
         $output = self::runDiscoverPy(array(
             '--action',   'auth_init',
@@ -162,9 +181,6 @@ class dyson extends eqLogic {
         return array('type' => 'otp', 'challengeId' => $result['challengeId']);
     }
 
-    /**
-     * Étape 2 : valide l'OTP via libdyson et crée/met à jour les équipements.
-     */
     public static function authVerify($_email, $_password, $_country, $_challengeId, $_otp) {
         $output = self::runDiscoverPy(array(
             '--action', 'auth_verify',
@@ -186,9 +202,6 @@ class dyson extends eqLogic {
         return self::processDiscoveredDevices($result['devices']);
     }
 
-    /**
-     * Crée ou met à jour les eqLogics à partir de la liste retournée par discover.py.
-     */
     private static function processDiscoveredDevices(array $devices) {
         $result = array('created' => 0, 'updated' => 0, 'skipped' => 0);
         log::add('dyson', 'info', count($devices) . ' appareil(s) trouvé(s) dans le compte Dyson');
@@ -231,9 +244,6 @@ class dyson extends eqLogic {
         return $result;
     }
 
-    /**
-     * Exécute discover.py avec les arguments donnés et retourne la sortie stdout+stderr.
-     */
     private static function runDiscoverPy(array $args) {
         $venv   = dirname(dirname(dirname(__FILE__))) . '/resources/python_venv/bin/python3';
         $python = file_exists($venv) ? $venv : 'python3';
@@ -294,7 +304,6 @@ class dyson extends eqLogic {
 
     private function fanPurifierCommands() {
         return array(
-            // ── État opérationnel ─────────────────────────────────────
             array('name' => 'Connecté',          'logicalId' => 'connected',          'type' => 'info',   'subType' => 'binary',  'unite' => '',       'historize' => 0, 'isVisible' => 1),
             array('name' => 'Alimentation',      'logicalId' => 'power_state',        'type' => 'info',   'subType' => 'binary',  'unite' => '',       'historize' => 1, 'isVisible' => 1),
             array('name' => 'Mode auto',         'logicalId' => 'auto_mode',          'type' => 'info',   'subType' => 'binary',  'unite' => '',       'historize' => 0, 'isVisible' => 1),
@@ -305,7 +314,6 @@ class dyson extends eqLogic {
             array('name' => 'Minuterie',         'logicalId' => 'sleep_timer',        'type' => 'info',   'subType' => 'numeric', 'unite' => 'min',    'historize' => 0, 'isVisible' => 1),
             array('name' => 'Filtre HEPA',       'logicalId' => 'hepa_filter_life',   'type' => 'info',   'subType' => 'numeric', 'unite' => '%',      'historize' => 1, 'isVisible' => 1),
             array('name' => 'Filtre Carbone',    'logicalId' => 'carbon_filter_life', 'type' => 'info',   'subType' => 'numeric', 'unite' => '%',      'historize' => 1, 'isVisible' => 1),
-            // ── Qualité de l'air ──────────────────────────────────────
             array('name' => 'Température',       'logicalId' => 'temperature',        'type' => 'info',   'subType' => 'numeric', 'unite' => '°C',     'historize' => 1, 'isVisible' => 1),
             array('name' => 'Humidité',          'logicalId' => 'humidity',           'type' => 'info',   'subType' => 'numeric', 'unite' => '%',      'historize' => 1, 'isVisible' => 1),
             array('name' => 'PM2.5',             'logicalId' => 'pm25',               'type' => 'info',   'subType' => 'numeric', 'unite' => 'µg/m³',  'historize' => 1, 'isVisible' => 1),
@@ -314,7 +322,6 @@ class dyson extends eqLogic {
             array('name' => 'NO2',               'logicalId' => 'no2',                'type' => 'info',   'subType' => 'numeric', 'unite' => 'µg/m³',  'historize' => 1, 'isVisible' => 1),
             array('name' => 'CO2',               'logicalId' => 'co2',                'type' => 'info',   'subType' => 'numeric', 'unite' => 'ppm',    'historize' => 1, 'isVisible' => 1),
             array('name' => 'Qualité air',       'logicalId' => 'air_quality',        'type' => 'info',   'subType' => 'numeric', 'unite' => 'AQI',    'historize' => 1, 'isVisible' => 1),
-            // ── Actions ───────────────────────────────────────────────
             array('name' => 'Allumer',           'logicalId' => 'cmd_power_on',       'type' => 'action', 'subType' => 'other',   'isVisible' => 1),
             array('name' => 'Éteindre',          'logicalId' => 'cmd_power_off',      'type' => 'action', 'subType' => 'other',   'isVisible' => 1),
             array('name' => 'Régler vitesse',    'logicalId' => 'cmd_set_speed',      'type' => 'action', 'subType' => 'slider',  'isVisible' => 1,
@@ -390,7 +397,7 @@ class dyson extends eqLogic {
     }
 
     /* ================================================================
-     * Callback démon → mise à jour des commandes
+     * Callback démon
      * ================================================================ */
 
     public static function callbackDaemon($_data) {
@@ -483,22 +490,22 @@ class dysonCmd extends cmd {
         $lid = $this->getLogicalId();
 
         switch ($lid) {
-            case 'cmd_power_on':        $eq->sendCommandToDaemon('set_power',          array('value' => 'ON'));  break;
-            case 'cmd_power_off':       $eq->sendCommandToDaemon('set_power',          array('value' => 'OFF')); break;
-            case 'cmd_set_speed':       $eq->sendCommandToDaemon('set_speed',          array('value' => max(1, min(10, intval($_options['slider'] ?? 1))))); break;
-            case 'cmd_auto_on':         $eq->sendCommandToDaemon('set_auto',           array('value' => 'ON'));  break;
-            case 'cmd_auto_off':        $eq->sendCommandToDaemon('set_auto',           array('value' => 'OFF')); break;
-            case 'cmd_oscillation_on':  $eq->sendCommandToDaemon('set_oscillation',    array('value' => 'ON'));  break;
-            case 'cmd_oscillation_off': $eq->sendCommandToDaemon('set_oscillation',    array('value' => 'OFF')); break;
-            case 'cmd_night_on':        $eq->sendCommandToDaemon('set_night_mode',     array('value' => 'ON'));  break;
-            case 'cmd_night_off':       $eq->sendCommandToDaemon('set_night_mode',     array('value' => 'OFF')); break;
-            case 'cmd_sleep_timer':     $eq->sendCommandToDaemon('set_sleep_timer',    array('value' => max(0, min(540, intval($_options['slider'] ?? 0))))); break;
-            case 'cmd_heat_on':         $eq->sendCommandToDaemon('set_heating',        array('value' => 'HEAT')); break;
-            case 'cmd_heat_off':        $eq->sendCommandToDaemon('set_heating',        array('value' => 'OFF'));  break;
-            case 'cmd_set_target_temp': $eq->sendCommandToDaemon('set_target_temp',   array('value' => max(1, min(37, floatval($_options['slider'] ?? 20))))); break;
-            case 'cmd_humid_on':        $eq->sendCommandToDaemon('set_humidification', array('value' => 'HUMD')); break;
-            case 'cmd_humid_off':       $eq->sendCommandToDaemon('set_humidification', array('value' => 'OFF'));  break;
-            case 'cmd_set_humidity':    $eq->sendCommandToDaemon('set_target_humidity',array('value' => max(30, min(70, intval($_options['slider'] ?? 50))))); break;
+            case 'cmd_power_on':        $eq->sendCommandToDaemon('set_power',           array('value' => 'ON'));  break;
+            case 'cmd_power_off':       $eq->sendCommandToDaemon('set_power',           array('value' => 'OFF')); break;
+            case 'cmd_set_speed':       $eq->sendCommandToDaemon('set_speed',           array('value' => max(1, min(10, intval($_options['slider'] ?? 1))))); break;
+            case 'cmd_auto_on':         $eq->sendCommandToDaemon('set_auto',            array('value' => 'ON'));  break;
+            case 'cmd_auto_off':        $eq->sendCommandToDaemon('set_auto',            array('value' => 'OFF')); break;
+            case 'cmd_oscillation_on':  $eq->sendCommandToDaemon('set_oscillation',     array('value' => 'ON'));  break;
+            case 'cmd_oscillation_off': $eq->sendCommandToDaemon('set_oscillation',     array('value' => 'OFF')); break;
+            case 'cmd_night_on':        $eq->sendCommandToDaemon('set_night_mode',      array('value' => 'ON'));  break;
+            case 'cmd_night_off':       $eq->sendCommandToDaemon('set_night_mode',      array('value' => 'OFF')); break;
+            case 'cmd_sleep_timer':     $eq->sendCommandToDaemon('set_sleep_timer',     array('value' => max(0, min(540, intval($_options['slider'] ?? 0))))); break;
+            case 'cmd_heat_on':         $eq->sendCommandToDaemon('set_heating',         array('value' => 'HEAT')); break;
+            case 'cmd_heat_off':        $eq->sendCommandToDaemon('set_heating',         array('value' => 'OFF'));  break;
+            case 'cmd_set_target_temp': $eq->sendCommandToDaemon('set_target_temp',    array('value' => max(1, min(37, floatval($_options['slider'] ?? 20))))); break;
+            case 'cmd_humid_on':        $eq->sendCommandToDaemon('set_humidification',  array('value' => 'HUMD')); break;
+            case 'cmd_humid_off':       $eq->sendCommandToDaemon('set_humidification',  array('value' => 'OFF'));  break;
+            case 'cmd_set_humidity':    $eq->sendCommandToDaemon('set_target_humidity', array('value' => max(30, min(70, intval($_options['slider'] ?? 50))))); break;
             case 'cmd_start':           $eq->sendCommandToDaemon('robot_start');  break;
             case 'cmd_pause':           $eq->sendCommandToDaemon('robot_pause');  break;
             case 'cmd_resume':          $eq->sendCommandToDaemon('robot_resume'); break;
