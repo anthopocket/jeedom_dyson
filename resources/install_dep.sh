@@ -1,7 +1,7 @@
 #!/bin/bash
 # Installation des dépendances du plugin Dyson pour Jeedom
 
-PLUGIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 REQUIREMENTS="$PLUGIN_DIR/dysonMqtt/requirements.txt"
 VENV_DIR="$PLUGIN_DIR/python_venv"
 PROGRESS_FILE="/tmp/jeedom/dyson/dependency"
