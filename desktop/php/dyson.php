@@ -13,6 +13,11 @@ $eqLogics = eqLogic::byType($plugin->getId());
     <div class="col-xs-12 eqLogicThumbnailDisplay">
         <legend><i class="fas fa-fan"></i> {{Gestion}}</legend>
         <div class="eqLogicThumbnailContainer">
+            <div class="cursor eqLogicAction logoPrimary" data-action="add">
+                <i class="fas fa-plus-circle"></i>
+                <br>
+                <span>{{Ajouter}}</span>
+            </div>
             <div class="cursor eqLogicAction logoSecondary" data-action="gotoPluginConf">
                 <i class="fas fa-wrench"></i>
                 <br>
@@ -32,7 +37,7 @@ $eqLogics = eqLogic::byType($plugin->getId());
             ?>
                 <div class="eqLogicDisplayCard cursor <?php echo $eq->getIsEnable() ? '' : 'opacity05'; ?>"
                      data-eqLogic_id="<?php echo $eq->getId(); ?>">
-                    <img src="plugins/dyson/plugin_info/dyson_icon.png" />
+                    <img src="<?php echo $eq->getImage(); ?>" />
                     <br>
                     <span class="name"><?php echo $eq->getHumanName(true, true); ?></span>
                     <span class="hiddenAsCard displayTableRight">
@@ -147,7 +152,7 @@ $eqLogics = eqLogic::byType($plugin->getId());
                             <div class="col-sm-8">
                                 <input type="text" class="eqLogicAttr form-control"
                                        data-l1key="configuration" data-l2key="serial_number"
-                                       readonly style="background:#eee;" />
+                                       placeholder="ex: M4P-EU-UKA4182A" />
                             </div>
                         </div>
                         <div class="form-group">
@@ -155,9 +160,51 @@ $eqLogics = eqLogic::byType($plugin->getId());
                             <div class="col-sm-8">
                                 <input type="text" class="eqLogicAttr form-control"
                                        data-l1key="configuration" data-l2key="product_type"
-                                       readonly style="background:#eee;" />
+                                       placeholder="ex: 897" />
                             </div>
                         </div>
+
+                        <!-- ── Saisie manuelle des credentials ── -->
+                        <legend><i class="fas fa-key"></i> {{Saisie manuelle des credentials}}
+                            <sup><i class="fas fa-question-circle tooltips"
+                                title="{{Utilisez cette section si la découverte automatique échoue. Récupérez les credentials depuis un PC avec le script get_dyson.py}}"></i></sup>
+                        </legend>
+                        <div class="alert alert-info" style="margin:0 15px 10px;">
+                            <i class="fas fa-info-circle"></i>
+                            {{Renseignez ces champs si la découverte automatique ne fonctionne pas (IP bloquée par Dyson).}}
+                            <br>
+                            <small>{{Récupérez les credentials depuis un PC avec}} <code>python get_dyson.py</code></small>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-4 control-label">{{Numéro de série}}</label>
+                            <div class="col-sm-8">
+                                <input type="text" id="manual_serial" class="form-control"
+                                       placeholder="ex: M4P-EU-UKA4182A" />
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-4 control-label">{{Type produit}}</label>
+                            <div class="col-sm-8">
+                                <input type="text" id="manual_product_type" class="form-control"
+                                       placeholder="ex: 897" />
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-4 control-label">{{Credential MQTT}}</label>
+                            <div class="col-sm-8">
+                                <input type="text" id="manual_credential" class="form-control"
+                                       placeholder="ex: zjF3ex8S..." />
+                                <small class="text-muted">{{Valeur "Credential" retournée par get_dyson.py}}</small>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <div class="col-sm-offset-4 col-sm-8">
+                                <button class="btn btn-warning btn-sm" id="bt_apply_manual" type="button">
+                                    <i class="fas fa-upload"></i> {{Appliquer les credentials}}
+                                </button>
+                            </div>
+                        </div>
+
                     </div>
 
                     <div class="col-lg-6">
@@ -186,7 +233,7 @@ $eqLogics = eqLogic::byType($plugin->getId());
                             </div>
                         </div>
                         <div class="form-group">
-                            <label class="col-sm-4 control-label">{{Mot de passe}}</label>
+                            <label class="col-sm-4 control-label">{{Mot de passe MQTT}}</label>
                             <div class="col-sm-8">
                                 <input type="password" class="eqLogicAttr form-control"
                                        data-l1key="configuration" data-l2key="mqtt_password" />
@@ -240,8 +287,53 @@ $eqLogics = eqLogic::byType($plugin->getId());
 
 <script>
 $(function () {
+
+    /* ── Appliquer les credentials manuels ── */
+    $('#bt_apply_manual').on('click', function () {
+        var serial      = $.trim($('#manual_serial').val());
+        var productType = $.trim($('#manual_product_type').val());
+        var credential  = $.trim($('#manual_credential').val());
+
+        if (!serial || !productType || !credential) {
+            $.fn.showAlert({ message: '{{Renseignez le numéro de série, le type produit et le credential}}', level: 'warning' });
+            return;
+        }
+
+        var id  = $('.eqLogicAttr[data-l1key="id"]').val();
+        var btn = $(this).prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> {{En cours...}}');
+
+        $.ajax({
+            type     : 'POST',
+            url      : 'plugins/dyson/core/ajax/dyson.ajax.php',
+            data     : {
+                action       : 'apply_manual_credentials',
+                id           : id,
+                serial       : serial,
+                product_type : productType,
+                credential   : credential,
+                apikey       : userProfils.hash,
+            },
+            dataType : 'json',
+            success  : function (r) {
+                btn.prop('disabled', false).html('<i class="fas fa-upload"></i> {{Appliquer les credentials}}');
+                if (r.state !== 'ok') {
+                    $.fn.showAlert({ message: r.result, level: 'danger' });
+                    return;
+                }
+                $.fn.showAlert({ message: '{{Credentials appliqués — cliquez sur Sauvegarder}}', level: 'success' });
+                /* Recharger l'équipement pour afficher les nouvelles valeurs */
+                $('.eqLogicDisplayCard[data-eqLogic_id="' + id + '"]').trigger('click');
+            },
+            error: function (xhr) {
+                btn.prop('disabled', false).html('<i class="fas fa-upload"></i> {{Appliquer les credentials}}');
+                $.fn.showAlert({ message: 'Erreur HTTP ' + xhr.status, level: 'danger' });
+            }
+        });
+    });
+
+    /* ── Recréer les commandes ── */
     $('#bt_recreate_cmds').on('click', function () {
-        var id = $('.eqLogic').attr('data-eqLogic_id');
+        var id  = $('.eqLogic').attr('data-eqLogic_id');
         if (!id) { return; }
         var btn = $(this).prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> {{En cours...}}');
         $.ajax({
@@ -264,6 +356,7 @@ $(function () {
             }
         });
     });
+
 });
 </script>
 
