@@ -25,6 +25,7 @@ class dyson extends eqLogic {
         'N223' => array('label' => 'Purifier Hot+Cool Formaldehyde HP07','hot' => true,  'humid' => false, 'robot' => false),
         '2PQ'  => array('label' => '360 Heurist (Robot aspirateur)',    'hot' => false, 'humid' => false, 'robot' => true),
         '276'  => array('label' => '360 Eye (Robot aspirateur)',        'hot' => false, 'humid' => false, 'robot' => true),
+        '897'  => array('label' => 'Purifier Cool Formaldehyde TP11',   'hot' => false, 'humid' => false, 'robot' => false),
     );
 
     /* ================================================================
@@ -49,7 +50,13 @@ class dyson extends eqLogic {
         self::deamon_stop();
         $path    = realpath(dirname(__FILE__) . '/../../resources/dysonMqtt');
         $venv    = dirname(dirname(dirname(__FILE__))) . '/resources/python_venv/bin/python3';
-        $python3 = file_exists($venv) ? $venv : 'python3';
+
+        /* Refuser le démarrage si le venv est absent — python3 système n'a pas paho */
+        if (!file_exists($venv)) {
+            log::add('dyson', 'error', 'Demon non demarre : venv Python introuvable. Lancez l installation des dependances.');
+            return false;
+        }
+        $python3 = $venv;
         $port    = config::byKey('socketport', 'dyson', '55005');
 
         $cmd  = $python3 . ' ' . $path . '/dysonMqtt.py';
@@ -94,28 +101,29 @@ class dyson extends eqLogic {
     public static function dependancy_install() {
         log::clear('dyson_update');
         $progress_file = jeedom::getTmpFolder('dyson') . '/dependency';
-        /* Remettre le progress à 0 pour que Jeedom détecte le démarrage */
         if (file_exists($progress_file)) {
             unlink($progress_file);
         }
-        $return = array(
-            'progress_file' => $progress_file,
-            'state'         => 'ok',
+        $script = realpath(dirname(__FILE__) . '/../../resources/install_dep.sh');
+        if (!$script || !file_exists($script)) {
+            log::add('dyson', 'error', 'Script install_dep.sh introuvable');
+            return array(
+                'progress_file' => $progress_file,
+                'state'         => 'ok',
+            );
+        }
+        /* Format attendu par plugin.class.php :
+           array('script' => '/chemin/script', 'log' => '/chemin/log')
+           Jeedom remplace #stype# dans le chemin et vérifie file_exists() */
+        return array(
+            'script' => $script,
+            'log'    => log::getPathToLog('dyson_update'),
         );
-        $script  = dirname(dirname(dirname(__FILE__))) . '/resources/install_dep.sh';
-        $logFile = log::getPathToLog('dyson_update');
-        exec('sudo /bin/bash ' . escapeshellarg($script) . ' >> ' . $logFile . ' 2>&1 &');
-        return $return;
     }
 
     public static function dependancy_info() {
-        $progress_file = jeedom::getTmpFolder('dyson') . '/dependency';
-        $return = array(
-            'progress_file' => $progress_file,
-            'state'         => 'nok',
-        );
+        $return = array('state' => 'nok');
 
-        /* Vérification complète : venv + tous les paquets requis */
         $venv = dirname(dirname(dirname(__FILE__))) . '/resources/python_venv/bin/python3';
         if (!file_exists($venv)) {
             log::add('dyson', 'debug', 'dependancy_info : venv introuvable');
@@ -123,20 +131,16 @@ class dyson extends eqLogic {
         }
 
         exec(
-            escapeshellarg($venv) . ' -c "import paho.mqtt.client, requests, cryptography" 2>&1',
+            escapeshellarg($venv) . ' -c "import paho.mqtt.client, requests, cryptography, libdyson_rest" 2>&1',
             $out,
             $rc
         );
 
         if ($rc === 0) {
             $return['state'] = 'ok';
-            /* Nettoyer le progress file pour éviter l'affichage "en cours" */
-            if (file_exists($progress_file)) {
-                unlink($progress_file);
-            }
             log::add('dyson', 'debug', 'dependancy_info : tous les paquets OK');
         } else {
-            log::add('dyson', 'warning', 'dependancy_info : import échoué — ' . implode(' ', $out));
+            log::add('dyson', 'warning', 'dependancy_info : import echoue — ' . implode(' ', $out));
         }
 
         return $return;
@@ -159,6 +163,23 @@ class dyson extends eqLogic {
      * ================================================================ */
 
     public static function authInit($_email, $_password, $_country = 'FR') {
+        /* Protection anti double-clic : bloquer si une demande OTP a été faite
+           il y a moins de 60 secondes */
+        $ratelimit_file = sys_get_temp_dir() . '/dyson_jeedom_ratelimit.json';
+        if (file_exists($ratelimit_file)) {
+            $data = json_decode(file_get_contents($ratelimit_file), true);
+            if (isset($data['last_attempt'])) {
+                $elapsed = time() - intval($data['last_attempt']);
+                if ($elapsed < 60) {
+                    $remaining = 60 - $elapsed;
+                    throw new Exception(
+                        "Veuillez attendre encore {$remaining} secondes avant de redemander un code OTP. " .
+                        "Dyson bloque les IPs qui font trop de demandes."
+                    );
+                }
+            }
+        }
+
         $output = self::runDiscoverPy(array(
             '--action',   'auth_init',
             '--email',    $_email,
@@ -268,10 +289,52 @@ class dyson extends eqLogic {
     }
 
     /* ================================================================
+     * Saisie manuelle des credentials
+     * ================================================================ */
+
+    public static function applyManualCredentials($_id, $_serial, $_productType, $_credential) {
+        $eq = eqLogic::byId($_id);
+        if (!is_object($eq)) {
+            throw new Exception('Equipement introuvable : ' . $_id);
+        }
+
+        $serial      = trim($_serial);
+        $productType = trim($_productType);
+        $credential  = trim($_credential);
+
+        if (empty($serial) || empty($productType) || empty($credential)) {
+            throw new Exception('Serial, type produit et credential sont obligatoires');
+        }
+
+        $eq->setLogicalId($serial);
+        $eq->setConfiguration('serial_number', $serial);
+        $eq->setConfiguration('product_type',  $productType);
+        $eq->setConfiguration('mqtt_username',  $serial);
+        $eq->setConfiguration('mqtt_password',  $credential);
+        if (!$eq->getConfiguration('mqtt_port')) {
+            $eq->setConfiguration('mqtt_port', 1883);
+        }
+        $eq->save();
+
+        log::add('dyson', 'info', 'Credentials manuels appliques pour ' . $serial . ' (' . $productType . ')');
+        return array('serial' => $serial, 'product_type' => $productType);
+    }
+
+    /* ================================================================
      * Cycle de vie équipement
      * ================================================================ */
 
     public function postSave() {
+        /* Synchroniser logicalId et mqtt_username avec serial_number */
+        $serial = trim($this->getConfiguration('serial_number', ''));
+        if ($serial !== '') {
+            if ($this->getLogicalId() !== $serial) {
+                $this->setLogicalId($serial);
+            }
+            if ($this->getConfiguration('mqtt_username', '') === '') {
+                $this->setConfiguration('mqtt_username', $serial);
+            }
+        }
         $this->createDefaultCommands();
         if (self::deamon_info()['state'] === 'ok') {
             $this->sendDeviceToDaemon();
