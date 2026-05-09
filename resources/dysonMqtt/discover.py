@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Dyson cloud discovery - appel direct API Dyson sans libdyson.
-Contourne les problèmes de User-Agent de libdyson.
+Dyson cloud discovery pour Jeedom via libdyson-rest.
+Utilise begin_login() + complete_login() separes pour eviter
+le DysonOTPTooFrequently et le 429.
 """
 
 import sys
@@ -11,24 +12,11 @@ import os
 import traceback
 import tempfile
 import stat
-import requests
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.backends import default_backend
-import base64
-import hashlib
+import time
 
-STATE_FILE = os.path.join(tempfile.gettempdir(), 'dyson_jeedom_auth.json')
-
-BASE_URL        = "https://appapi.cp.dyson.com"
-API_USER_STATUS = "/v3/userregistration/email/userstatus"
-API_EMAIL_AUTH  = "/v3/userregistration/email/auth"
-API_EMAIL_VERIFY= "/v3/userregistration/email/verify"
-API_DEVICES     = "/v2/provisioningservice/manifest"
-
-HEADERS = {
-    "User-Agent": "android client",
-    "Content-Type": "application/json",
-}
+STATE_FILE     = os.path.join(tempfile.gettempdir(), 'dyson_jeedom_auth.json')
+RATELIMIT_FILE = os.path.join(tempfile.gettempdir(), 'dyson_jeedom_ratelimit.json')
+MIN_DELAY      = 90
 
 
 def out(data):
@@ -40,199 +28,158 @@ def fail(message):
     sys.exit(1)
 
 
-def save_state(data):
-    with open(STATE_FILE, 'w') as f:
+def save_json(path, data):
+    with open(path, 'w') as f:
         json.dump(data, f)
     try:
-        os.chmod(STATE_FILE, stat.S_IRUSR | stat.S_IWUSR)
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP)
     except OSError:
         pass
 
 
-def load_state():
-    if not os.path.exists(STATE_FILE):
+def load_json(path):
+    if not os.path.exists(path):
         return {}
-    with open(STATE_FILE) as f:
-        return json.load(f)
-
-
-def decrypt_password(encrypted_password):
-    """Déchiffre le mot de passe MQTT Dyson (AES)."""
-    key = b'\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20'
-    init_vector = b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
     try:
-        cipher = Cipher(
-            algorithms.AES(key),
-            modes.CBC(init_vector),
-            backend=default_backend()
-        )
-        decryptor = cipher.decryptor()
-        decrypted = decryptor.update(base64.b64decode(encrypted_password)) + decryptor.finalize()
-        json_password = decrypted[:-decrypted[-1]]
-        return json.loads(json_password)
+        with open(path) as f:
+            return json.load(f)
     except Exception:
-        return encrypted_password
+        return {}
 
 
-def do_auth_init(email, password, country):
-    # Étape optionnelle : vérifier le statut du compte
-    try:
-        resp = requests.post(
-            BASE_URL + API_USER_STATUS,
-            params={"country": country},
-            json={"email": email},
-            headers=HEADERS,
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            status_data = resp.json()
-            account_status = status_data.get("accountStatus", "ACTIVE")
-            if account_status not in ("ACTIVE", "UNKNOWN"):
-                fail(
-                    f"Compte Dyson inactif (status: {account_status}). "
-                    "Vérifiez l'adresse email ou créez un compte sur dyson.com."
-                )
-    except requests.RequestException:
-        pass  # On continue même si /userstatus échoue
-
-    # Demande d'OTP
-    try:
-        resp = requests.post(
-            BASE_URL + API_EMAIL_AUTH,
-            params={"country": country, "culture": "fr-FR"},
-            json={"email": email},
-            headers=HEADERS,
-            timeout=15,
-        )
-    except requests.RequestException as e:
-        fail(f"Erreur réseau : {e}")
-
-    if resp.status_code == 429:
-        fail("Trop de demandes OTP. Attendez quelques minutes avant de réessayer.")
-
-    if resp.status_code not in (200, 201):
-        fail(
-            f"Authentification refusée par Dyson (HTTP {resp.status_code}).\n"
-            "Causes possibles :\n"
-            "- Adresse email Dyson incorrecte\n"
-            "- Compte créé via Apple/Google (pas de mot de passe Dyson)\n"
-            "- IP bloquée temporairement par Dyson\n"
-            f"Email utilisé : {email}\n"
-            f"Réponse : {resp.text[:200]}"
-        )
-
-    try:
-        challenge_id = resp.json()["challengeId"]
-    except (KeyError, ValueError):
-        fail(f"Réponse Dyson inattendue : {resp.text[:500]}")
-
-    save_state({
-        "email":        email,
-        "password":     password,
-        "country":      country,
-        "challenge_id": challenge_id,
-    })
-
-    out({"challengeId": challenge_id})
-
-
-def do_auth_verify(otp):
-    state = load_state()
-    if not state:
-        fail("État d'authentification perdu. Recommencez la découverte depuis le début.")
-
-    email        = state["email"]
-    password     = state["password"]
-    country      = state["country"]
-    challenge_id = state["challenge_id"]
-
-    # Vérification OTP
-    try:
-        resp = requests.post(
-            BASE_URL + API_EMAIL_VERIFY,
-            json={
-                "email":       email,
-                "password":    password,
-                "challengeId": challenge_id,
-                "otpCode":     otp,
-            },
-            headers=HEADERS,
-            timeout=15,
-        )
-    except requests.RequestException as e:
-        fail(f"Erreur réseau : {e}")
-
-    if resp.status_code == 400:
-        fail("Code OTP invalide ou expiré. Recommencez la découverte pour obtenir un nouveau code.")
-
-    if resp.status_code not in (200, 201):
-        fail(f"Vérification OTP refusée (HTTP {resp.status_code}) : {resp.text[:200]}")
-
-    auth_info = resp.json()
-    account   = auth_info.get("Account", "")
-    token     = auth_info.get("token",   "") or auth_info.get("Token", "")
-
-    if not account and not token:
-        fail(f"Réponse verify inattendue : {resp.text[:500]}")
-
-    # Récupération des appareils
-    try:
-        devices_resp = requests.get(
-            BASE_URL + API_DEVICES,
-            headers={**HEADERS, "Authorization": "Bearer " + token} if token else HEADERS,
-            auth=(account, token) if account and token else None,
-            timeout=15,
-        )
-    except requests.RequestException as e:
-        fail(f"Erreur réseau lors de la récupération des appareils : {e}")
-
-    if devices_resp.status_code not in (200, 201):
-        fail(f"Impossible de récupérer les appareils (HTTP {devices_resp.status_code}) : {devices_resp.text[:200]}")
-
-    raw_devices = devices_resp.json()
-    if not isinstance(raw_devices, list):
-        raw_devices = raw_devices.get("devices", raw_devices.get("Devices", []))
-
-    devices = []
-    for d in raw_devices:
-        serial       = d.get("Serial",      d.get("serial",       ""))
-        name         = d.get("Name",         d.get("name",         "Dyson " + serial))
-        product_type = d.get("ProductType",  d.get("product_type", ""))
-        encrypted_pw = d.get("LocalCredentials", d.get("credentials", ""))
-
-        # Déchiffrement du mot de passe MQTT local
-        credential = encrypted_pw
-        if encrypted_pw:
-            try:
-                decrypted = decrypt_password(encrypted_pw)
-                # decrypt_password retourne le JSON déchiffré
-                # Le vrai mot de passe MQTT est apPasswordHash
-                if isinstance(decrypted, dict):
-                    credential = decrypted.get('apPasswordHash', decrypted.get('serial', encrypted_pw))
-                else:
-                    credential = decrypted
-            except Exception:
-                credential = encrypted_pw
-
-        devices.append({
-            "serial":       serial,
-            "name":         name,
-            "product_type": product_type,
-            "credentials":  credential,
-        })
-
-    # Nettoyage du fichier état
-    if os.path.exists(STATE_FILE):
+def remove_file(path):
+    if os.path.exists(path):
         try:
-            os.remove(STATE_FILE)
+            os.remove(path)
         except OSError:
             pass
 
-    out({"devices": devices})
+
+def check_ratelimit():
+    data    = load_json(RATELIMIT_FILE)
+    last    = data.get('last_attempt', 0)
+    elapsed = time.time() - last
+    if elapsed < MIN_DELAY:
+        remaining = int(MIN_DELAY - elapsed)
+        fail(
+            f"Patientez encore {remaining} secondes avant de redemander un code OTP.\n"
+            "Dyson bloque les IPs qui font trop de demandes rapprochees."
+        )
+
+
+def get_client(email, password, country):
+    from libdyson_rest import DysonClient
+    return DysonClient(
+        email=email,
+        password=password,
+        country=country,
+        culture="fr-FR",
+    )
+
+
+def do_auth_init(email, password, country):
+    try:
+        from libdyson_rest.exceptions import DysonAuthError, DysonConnectionError, DysonAPIError
+    except ImportError:
+        fail("libdyson-rest non installe. Lancez l'installation des dependances.")
+
+    check_ratelimit()
+
+    try:
+        client     = get_client(email, password, country)
+        challenge  = client.begin_login()
+        challenge_id = str(challenge.challenge_id)
+    except DysonAuthError as e:
+        fail(f"Authentification refusee : {str(e)}")
+    except DysonAPIError as e:
+        err = str(e)
+        if '429' in err:
+            fail("Trop de demandes OTP. Attendez quelques minutes avant de reessayer.")
+        fail(f"Erreur API Dyson : {err}")
+    except DysonConnectionError as e:
+        fail(f"Erreur de connexion : {str(e)}")
+    except Exception as e:
+        fail(f"Erreur inattendue : {repr(e)}")
+
+    save_json(RATELIMIT_FILE, {'last_attempt': time.time()})
+    save_json(STATE_FILE, {
+        'email':        email,
+        'password':     password,
+        'country':      country,
+        'challenge_id': challenge_id,
+        'ts':           time.time(),
+    })
+
+    out({'challengeId': challenge_id})
+
+
+def do_auth_verify(otp):
+    state = load_json(STATE_FILE)
+    if not state:
+        fail("Session perdue. Recommencez la decouverte depuis le debut.")
+
+    if time.time() - state.get('ts', 0) > 600:
+        remove_file(STATE_FILE)
+        fail("OTP expire (10 minutes). Recommencez la decouverte.")
+
+    email        = state['email']
+    password     = state['password']
+    country      = state['country']
+    challenge_id = state['challenge_id']
+
+    try:
+        from libdyson_rest.exceptions import DysonAuthError, DysonConnectionError, DysonAPIError
+    except ImportError:
+        fail("libdyson-rest non installe.")
+
+    try:
+        client = get_client(email, password, country)
+        # complete_login n'appelle PAS begin_login → pas de nouveau 429
+        login_info = client.complete_login(
+            challenge_id=challenge_id,
+            otp_code=otp,
+        )
+    except DysonAuthError as e:
+        err = str(e)
+        if 'otp' in err.lower() or 'invalid' in err.lower() or 'expired' in err.lower():
+            fail("Code OTP invalide ou expire. Recommencez la decouverte.")
+        fail(f"Authentification refusee : {err}")
+    except DysonAPIError as e:
+        fail(f"Erreur API : {str(e)}")
+    except DysonConnectionError as e:
+        fail(f"Erreur connexion : {str(e)}")
+    except Exception as e:
+        fail(f"Erreur inattendue : {repr(e)}")
+
+    # Recuperer les appareils avec le token obtenu
+    try:
+        devices_raw = client.get_devices()
+    except Exception as e:
+        fail(f"Erreur recuperation appareils : {str(e)}")
+
+    devices = []
+    for d in devices_raw:
+        serial       = getattr(d, 'serial_number', '') or ''
+        name         = getattr(d, 'name',          '') or 'Dyson ' + serial
+        product_type = getattr(d, 'type',          '') or ''
+        credential   = ''
+        if getattr(d, 'connected_configuration', None) and d.connected_configuration.mqtt:
+            credential = d.connected_configuration.mqtt.local_broker_credentials or ''
+        devices.append({
+            'serial':       serial,
+            'name':         name,
+            'product_type': product_type,
+            'credentials':  str(credential),
+        })
+
+    remove_file(STATE_FILE)
+    remove_file(RATELIMIT_FILE)
+
+    out({'devices': devices})
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Dyson cloud discovery direct API')
+    parser = argparse.ArgumentParser(description='Dyson cloud discovery pour Jeedom')
     parser.add_argument('--action',   required=True, choices=['auth_init', 'auth_verify'])
     parser.add_argument('--email',    default='')
     parser.add_argument('--password', default='')
