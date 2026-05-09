@@ -3,24 +3,7 @@ try {
     require_once dirname(__FILE__) . '/../../../../core/php/core.inc.php';
     ajax::init();
 
-    if (!isConnect('admin') && config::byKey('api') != init('apikey')) {
-        ajax::error('401 - Accès non autorisé', 4010);
-    }
-
     $action = init('action');
-
-    /* ── Ajout manuel ───────────────────────────────────────────────── */
-    if ($action == 'add') {
-        $name = trim(init('name'));
-        if ($name == '') throw new Exception('Le nom est obligatoire');
-        $eq = new dyson();
-        $eq->setName($name);
-        $eq->setEqType_name('dyson');
-        $eq->setIsEnable(1);
-        $eq->setIsVisible(1);
-        $eq->save();
-        ajax::success(array('id' => $eq->getId()));
-    }
 
     /* ── Lecture d'un équipement ────────────────────────────────────── */
     if ($action == 'get') {
@@ -74,6 +57,20 @@ try {
         $otp         = trim(init('otp'));
         if ($otp == '') throw new Exception('Code OTP requis');
         $result = dyson::authVerify($email, $password, $country, $challengeId, $otp);
+        ajax::success($result);
+    }
+
+    /* ── Saisie manuelle des credentials ────────────────────────────── */
+    if ($action == 'apply_manual_credentials') {
+        $id          = trim(init('id'));
+        $serial      = trim(init('serial'));
+        $productType = trim(init('product_type'));
+        $credential  = trim(init('credential'));
+        if ($id == '')          throw new Exception('ID équipement manquant');
+        if ($serial == '')      throw new Exception('Numéro de série manquant');
+        if ($productType == '') throw new Exception('Type produit manquant');
+        if ($credential == '')  throw new Exception('Credential manquant');
+        $result = dyson::applyManualCredentials($id, $serial, $productType, $credential);
         ajax::success($result);
     }
 
