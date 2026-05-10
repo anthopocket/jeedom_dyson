@@ -16,7 +16,14 @@ $apikey = config::byKey('api');
         <div class="form-group">
             <label class="col-sm-3 control-label">{{Mot de passe}}</label>
             <div class="col-sm-4">
-                <input type="password" class="configKey form-control" data-l1key="dyson_password" />
+                <div class="input-group">
+                    <input type="password" id="dyson_password_field" class="configKey form-control" data-l1key="dyson_password" />
+                    <span class="input-group-btn">
+                        <button type="button" class="btn btn-default" id="bt_toggle_password" title="{{Afficher/masquer le mot de passe}}">
+                            <i class="fas fa-eye" id="icon_toggle_password"></i>
+                        </button>
+                    </span>
+                </div>
             </div>
         </div>
         <div class="form-group">
@@ -94,6 +101,19 @@ $apikey = config::byKey('api');
     var APIKEY    = '<?php echo $apikey; ?>';
     var challengeId = null;
 
+    /* ── Afficher/masquer le mot de passe ── */
+    $('#bt_toggle_password').on('click', function () {
+        var field = $('#dyson_password_field');
+        var icon  = $('#icon_toggle_password');
+        if (field.attr('type') === 'password') {
+            field.attr('type', 'text');
+            icon.removeClass('fa-eye').addClass('fa-eye-slash');
+        } else {
+            field.attr('type', 'password');
+            icon.removeClass('fa-eye-slash').addClass('fa-eye');
+        }
+    });
+
     function getField(key) { return $('[data-l1key="' + key + '"]').val().trim(); }
 
     function post(data, ok, fail) {
@@ -150,7 +170,6 @@ $apikey = config::byKey('api');
                 if (data.type === 'direct') {
                     showResult(data.result);
                 } else {
-                    // OTP requis
                     challengeId = data.challengeId;
                     $('#div_step2').show();
                     $('#input_otp').val('').focus();
