@@ -64,7 +64,7 @@ echo 80 > "$PROGRESS_FILE"
 
 # ── Vérification ──────────────────────────────────────────────────────
 echo "Vérification des imports..."
-"$VENV_DIR/bin/python3" -c "import paho.mqtt.client, requests, cryptography, libdyson_rest" 2>&1 \
+"$VENV_DIR/bin/python3" -c "import paho.mqtt.client, requests, cryptography, libdyson_rest, zeroconf" 2>&1 \
     || fail "Verification des imports echouee"
 echo 90 > "$PROGRESS_FILE"
 
