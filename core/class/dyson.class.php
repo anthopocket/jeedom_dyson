@@ -131,7 +131,7 @@ class dyson extends eqLogic {
         }
 
         exec(
-            escapeshellarg($venv) . ' -c "import paho.mqtt.client, requests, cryptography, libdyson_rest" 2>&1',
+            escapeshellarg($venv) . ' -c "import paho.mqtt.client, requests, cryptography, libdyson_rest, zeroconf" 2>&1',
             $out,
             $rc
         );
