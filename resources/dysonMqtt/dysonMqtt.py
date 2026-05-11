@@ -227,6 +227,9 @@ class DysonDevice:
         self._connected = False
         if rc == 0:
             logger.info('[%s] Déconnexion propre', self.serial)
+        elif rc == 7:
+            # rc=7 est normal pour les appareils Dyson 897 — reconnexion automatique
+            logger.debug('[%s] Déconnexion broker (rc=7) — reconnexion en cours', self.serial)
         else:
             logger.warning('[%s] Déconnexion inattendue (rc=%d) — reconnexion automatique en cours', self.serial, rc)
 
@@ -398,8 +401,16 @@ class DysonDevice:
     def send_command(self, action: str, params: dict = None):
         logger.info('[%s] Commande reçue de Jeedom : action=%s params=%s', self.serial, action, params)
         if not self._connected or not self._client:
-            logger.error('[%s] Impossible d\'envoyer : non connecté au broker MQTT', self.serial)
-            return
+            # Attendre jusqu'à 5 secondes que la reconnexion automatique se fasse
+            logger.warning('[%s] Non connecté — attente reconnexion (max 5s)...', self.serial)
+            for _ in range(10):
+                time.sleep(0.5)
+                if self._connected and self._client:
+                    logger.info('[%s] Reconnecté — envoi de la commande', self.serial)
+                    break
+            else:
+                logger.error('[%s] Impossible d\'envoyer : non connecté au broker MQTT', self.serial)
+                return
 
         now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
         data    = {}
@@ -474,10 +485,7 @@ class DysonDevice:
     def _heartbeat_loop(self):
         while not self._stop_event.wait(HEARTBEAT_INTERVAL):
             if self._connected:
-                logger.debug('[%s] Heartbeat — demande état', self.serial)
                 self._request_current_state()
-            else:
-                logger.debug('[%s] Heartbeat — non connecté, skip', self.serial)
 
     # ── Déchiffrement mot de passe MQTT ───────────────────────────────
 
