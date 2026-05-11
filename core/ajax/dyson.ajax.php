@@ -92,6 +92,26 @@ try {
         ajax::success();
     }
 
+    /* ── Scan réseau local pour trouver les IPs Dyson ───────────────── */
+    if ($action == 'scan_network') {
+        set_time_limit(30);
+        $venv   = dirname(dirname(dirname(__FILE__))) . '/resources/python_venv/bin/python3';
+        $python = file_exists($venv) ? $venv : 'python3';
+        $script = dirname(dirname(dirname(__FILE__))) . '/resources/dysonMqtt/scan.py';
+        if (!file_exists($script)) {
+            throw new Exception('Script scan.py introuvable');
+        }
+        $output = shell_exec(escapeshellarg($python) . ' ' . escapeshellarg($script) . ' 2>&1');
+        $result = json_decode(trim($output), true);
+        if (!is_array($result)) {
+            throw new Exception('Reponse invalide : ' . $output);
+        }
+        if (!empty($result['error'])) {
+            throw new Exception($result['message']);
+        }
+        ajax::success($result['devices']);
+    }
+
     throw new Exception('Action inconnue : ' . $action);
 
 } catch (Exception $e) {
