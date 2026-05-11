@@ -212,9 +212,17 @@ $eqLogics = eqLogic::byType($plugin->getId());
                         <div class="form-group">
                             <label class="col-sm-4 control-label">{{Adresse IP}}</label>
                             <div class="col-sm-8">
-                                <input type="text" class="eqLogicAttr form-control"
-                                       data-l1key="configuration" data-l2key="mqtt_hostname"
-                                       placeholder="192.168.1.x" />
+                                <div class="input-group">
+                                    <input type="text" class="eqLogicAttr form-control"
+                                           data-l1key="configuration" data-l2key="mqtt_hostname"
+                                           placeholder="192.168.1.x" />
+                                    <span class="input-group-btn">
+                                        <button class="btn btn-default" type="button" id="bt_scan_ip"
+                                                title="{{Rechercher automatiquement l'IP sur le réseau}}">
+                                            <i class="fas fa-search"></i>
+                                        </button>
+                                    </span>
+                                </div>
                             </div>
                         </div>
                         <div class="form-group">
@@ -326,6 +334,47 @@ $(function () {
             },
             error: function (xhr) {
                 btn.prop('disabled', false).html('<i class="fas fa-upload"></i> {{Appliquer les credentials}}');
+                $.fn.showAlert({ message: 'Erreur HTTP ' + xhr.status, level: 'danger' });
+            }
+        });
+    });
+
+    /* ── Scan IP automatique ── */
+    $('#bt_scan_ip').on('click', function () {
+        var btn    = $(this).prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i>');
+        var serial = $('.eqLogicAttr[data-l2key="serial_number"]').val().trim();
+        $.ajax({
+            type     : 'POST',
+            url      : 'plugins/dyson/core/ajax/dyson.ajax.php',
+            data     : { action: 'scan_network', apikey: userProfils.hash },
+            dataType : 'json',
+            success  : function (r) {
+                btn.prop('disabled', false).html('<i class="fas fa-search"></i>');
+                if (r.state !== 'ok') {
+                    $.fn.showAlert({ message: r.result, level: 'danger' });
+                    return;
+                }
+                var devices = r.result;
+                if (!devices || devices.length === 0) {
+                    $.fn.showAlert({ message: '{{Aucun appareil Dyson trouvé sur le réseau}}', level: 'warning' });
+                    return;
+                }
+                /* Chercher l'appareil correspondant au serial courant */
+                var found = null;
+                $.each(devices, function (i, d) {
+                    if (serial && d.serial === serial) { found = d; return false; }
+                });
+                /* Si pas trouvé par serial, prendre le premier */
+                if (!found) { found = devices[0]; }
+                $('.eqLogicAttr[data-l2key="mqtt_hostname"]').val(found.ip);
+                $('.eqLogicAttr[data-l2key="mqtt_port"]').val(found.port);
+                $.fn.showAlert({
+                    message: '{{IP trouvée : }}' + found.ip + ' (' + found.serial + ')',
+                    level: 'success'
+                });
+            },
+            error: function (xhr) {
+                btn.prop('disabled', false).html('<i class="fas fa-search"></i>');
                 $.fn.showAlert({ message: 'Erreur HTTP ' + xhr.status, level: 'danger' });
             }
         });
